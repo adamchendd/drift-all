@@ -1,0 +1,67 @@
+[package]
+name = "drift-rs"
+version = "1.0.0-alpha.16"
+edition = "2021"
+build = "build.rs"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/drift-labs/drift-rs"
+homepage = "https://drift.trade"
+description = """
+Rust SDK for Drift V2 Protocol on the Solana blockchain.
+"""
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
+keywords = ["solana", "dex", "drift", "sdk"]
+
+[lib]
+path = "crates/src/lib.rs"
+
+[features]
+# run integration tests against RPC nodes
+rpc_tests = []
+# make more variables public - use with caution
+unsafe_pub = []
+titan = ["titan-swap-api-client"] 
+
+[dependencies]
+abi_stable = { version = "0.11", default-features = false }
+ahash = "0.8.12"
+anchor-lang = { version = "0.32.1", features = ["derive"] }
+arrayvec = "0.7.6"
+base64 = "0.22"
+bytemuck = "1.17"
+crossbeam = "0.8.4"
+dashmap = "6"
+env_logger = "0.11"
+futures-util = "0.3"
+fxhash = "0.2.1"
+hex = "0.4"
+jupiter-swap-api-client = { git = "https://github.com/drift-labs/jupiter-swap-api-client", branch = "patch/2025-12-28", package = "jupiter-swap-api-client" }
+log = "0.4"
+pythnet-sdk = "2"
+regex = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+solana-account-decoder-client-types = "2"
+solana-rpc-client = "2"
+solana-rpc-client-api = "2"
+solana-sdk = "2" 
+solana-transaction-status = "2"
+spl-associated-token-account = "7.0"
+thiserror = "1"
+tokio = { version = "1.48", features = ["full"] }
+tokio-stream = "0.1.17"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", rev = "660797" }
+yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", rev = "660797" }
+drift-pubsub-client = { version = "0.1.1", path = "crates/pubsub-client" }
+titan-swap-api-client = { git = "https://github.com/0xahzam/titan-swap-api-client.git", optional = true }
+
+[dev-dependencies]
+bytes = "1"
+hex-literal = "0.4"
+solana-account-decoder = "2"
+toml = "0.8"
+
+[build-dependencies]
+drift-idl-gen = { version = "0.2", path = "crates/drift-idl-gen" }
