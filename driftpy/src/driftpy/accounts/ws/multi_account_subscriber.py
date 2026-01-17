@@ -43,6 +43,7 @@ class WebsocketMultiAccountSubscriber:
         # ⭐ 新增：BUG2修复相关数据结构
         self.request_id_counter: int = 0  # 自增request_id
         self.inflight_subscribes: Dict[int, Tuple[Pubkey, Optional[str]]] = {}  # request_id -> (pubkey, oracle_id)
+        self.pubkey_inflight: Set[Pubkey] = set()  # pubkey -> subscription pending
 
         self._lock = asyncio.Lock()
         self._running = False  # 控制循环运行标志
@@ -64,14 +65,15 @@ class WebsocketMultiAccountSubscriber:
 
         async with self._lock:
             # ⭐ 关键：检查 pubkey 是否已经订阅（避免重复订阅）
-            if pubkey in self.pubkey_to_subscription:
+            if pubkey in self.pubkey_to_subscription or pubkey in self.pubkey_inflight:
                 # pubkey 已经订阅，只需要添加 oracle_id 映射
                 if oracle_id is not None:
                     if pubkey not in self.pubkey_to_oracle_ids:
                         self.pubkey_to_oracle_ids[pubkey] = set()
                     self.pubkey_to_oracle_ids[pubkey].add(oracle_id)
-                    subscription_id = self.pubkey_to_subscription[pubkey]
-                    self.oracle_id_to_subscription[oracle_id] = subscription_id
+                    if pubkey in self.pubkey_to_subscription:
+                        subscription_id = self.pubkey_to_subscription[pubkey]
+                        self.oracle_id_to_subscription[oracle_id] = subscription_id
                     # 存储解码器和数据
                     self.decode_map[key] = decode_fn
                     if initial_data is not None:
@@ -108,13 +110,14 @@ class WebsocketMultiAccountSubscriber:
             try:
                 async with self._lock:
                     # ⭐ 再次检查（避免并发问题）
-                    if pubkey in self.pubkey_to_subscription:
+                    if pubkey in self.pubkey_to_subscription or pubkey in self.pubkey_inflight:
                         return
-                    
+
                     # ⭐ 生成 request_id（BUG2修复）
                     self.request_id_counter += 1
                     request_id = self.request_id_counter
-                    
+
+                    self.pubkey_inflight.add(pubkey)
                     # 存储到 inflight_subscribes
                     self.inflight_subscribes[request_id] = (pubkey, oracle_id)
                 
@@ -137,6 +140,7 @@ class WebsocketMultiAccountSubscriber:
                 async with self._lock:
                     if request_id in self.inflight_subscribes:
                         del self.inflight_subscribes[request_id]
+                    self.pubkey_inflight.discard(pubkey)
 
     async def remove_account(self, pubkey: Pubkey, oracle_id: Optional[str] = None):
         async with self._lock:
@@ -174,7 +178,7 @@ class WebsocketMultiAccountSubscriber:
 
             if self.ws is not None:
                 try:
-                    await self.ws.account_unsubscribe(subscription_id)
+                    await self._send_unsubscribe(subscription_id)
                 except Exception:
                     pass
 
@@ -236,7 +240,11 @@ class WebsocketMultiAccountSubscriber:
                                         continue
                                 
                                 # ⭐ 按 pubkey 去重（类似 Rust SDK）
-                                if pubkey not in seen_pubkeys and pubkey not in self.pubkey_to_subscription:
+                                if (
+                                    pubkey not in seen_pubkeys
+                                    and pubkey not in self.pubkey_to_subscription
+                                    and pubkey not in self.pubkey_inflight
+                                ):
                                     initial_accounts.append((pubkey, key))
                                     seen_pubkeys.add(pubkey)
 
@@ -248,6 +256,7 @@ class WebsocketMultiAccountSubscriber:
                                     self.request_id_counter += 1
                                     request_id = self.request_id_counter
                                     oracle_id = key if key != str(pubkey) else None
+                                    self.pubkey_inflight.add(pubkey)
                                     self.inflight_subscribes[request_id] = (pubkey, oracle_id)
                                 
                                 # ⭐ 直接发送 JSON-RPC 消息（BUG2修复）
@@ -269,6 +278,7 @@ class WebsocketMultiAccountSubscriber:
                                 async with self._lock:
                                     if request_id in self.inflight_subscribes:
                                         del self.inflight_subscribes[request_id]
+                                    self.pubkey_inflight.discard(pubkey)
 
                         # 使用循环而不是 async for，以便可以检查 _running 标志
                         try:
@@ -383,6 +393,7 @@ class WebsocketMultiAccountSubscriber:
                                             
                                             if request_id is not None and request_id in self.inflight_subscribes:
                                                 pubkey, oracle_id = self.inflight_subscribes.pop(request_id)
+                                                self.pubkey_inflight.discard(pubkey)
                                                 subscription_id = result
                                                 
                                                 # 建立映射关系
@@ -399,6 +410,7 @@ class WebsocketMultiAccountSubscriber:
                                                 # 向后兼容：如果没有 id，使用 pop(0)（但会记录警告）
                                                 if self.pending_subscriptions:
                                                     pubkey = self.pending_subscriptions.pop(0)
+                                                    self.pubkey_inflight.discard(pubkey)
                                                     subscription_id = result
                                                     self.subscription_map[subscription_id] = pubkey
                                                     self.pubkey_to_subscription[pubkey] = subscription_id
@@ -472,6 +484,7 @@ class WebsocketMultiAccountSubscriber:
                                 self.subscription_map.clear()
                                 self.pubkey_to_subscription.clear()
                                 self.inflight_subscribes.clear()
+                                self.pubkey_inflight.clear()
                             break  # 退出内层循环，重新连接
                         except Exception as e:
                             log.error(f"Error in message loop: {e}", exc_info=True)
@@ -485,6 +498,7 @@ class WebsocketMultiAccountSubscriber:
                         self.subscription_map.clear()
                         self.pubkey_to_subscription.clear()
                         self.inflight_subscribes.clear()
+                        self.pubkey_inflight.clear()
                     # 等待一段时间后重连
                     await asyncio.sleep(1)
                     continue
@@ -507,6 +521,7 @@ class WebsocketMultiAccountSubscriber:
                         self.subscription_map.clear()
                         self.pubkey_to_subscription.clear()
                         self.inflight_subscribes.clear()
+                        self.pubkey_inflight.clear()
                     raise  # 重新抛出 CancelledError，让调用者知道任务被取消
                 except Exception as e:
                     # 改进错误处理：打印详细的错误信息
@@ -522,6 +537,7 @@ class WebsocketMultiAccountSubscriber:
                         self.subscription_map.clear()
                         self.pubkey_to_subscription.clear()
                         self.inflight_subscribes.clear()
+                        self.pubkey_inflight.clear()
                     await asyncio.sleep(1)
                     continue
         except asyncio.CancelledError:
@@ -543,6 +559,7 @@ class WebsocketMultiAccountSubscriber:
                 self.subscription_map.clear()
                 self.pubkey_to_subscription.clear()
                 self.inflight_subscribes.clear()
+                self.pubkey_inflight.clear()
             raise  # 重新抛出，让任务正确取消
 
     def _update_data(self, key: str, new_data: Optional[DataAndSlot]):  # ⭐ key从Pubkey改为str
@@ -564,14 +581,26 @@ class WebsocketMultiAccountSubscriber:
                 # 只有一个oracle_id
                 key = list(oracle_ids)[0]
             else:
-                # 多个oracle_id，返回第一个（向后兼容，但建议使用oracle_id）
-                key = list(oracle_ids)[0]
-                print(f"Warning: pubkey {key} has multiple oracle_ids, returning first one. "
-                      f"Please use get_data(oracle_id) to specify.")
+                # 多个oracle_id，避免歧义，提示使用 oracle_id
+                log.warning(
+                    "pubkey %s has multiple oracle_ids; use get_data(oracle_id) to disambiguate",
+                    key,
+                )
+                return None
         return self.data_map.get(key)
 
     async def fetch(self, pubkey: Optional[Pubkey] = None, oracle_id: Optional[str] = None):
         if pubkey is not None:
+            if oracle_id is None:
+                oracle_ids = self.pubkey_to_oracle_ids.get(pubkey, set())
+                if len(oracle_ids) == 1:
+                    oracle_id = list(oracle_ids)[0]
+                elif len(oracle_ids) > 1:
+                    log.warning(
+                        "pubkey %s has multiple oracle_ids; pass oracle_id explicitly",
+                        pubkey,
+                    )
+                    return
             key = oracle_id if oracle_id is not None else str(pubkey)
             decode_fn = self.decode_map.get(key)
             if decode_fn is None:
@@ -645,7 +674,7 @@ class WebsocketMultiAccountSubscriber:
             async with self._lock:
                 for subscription_id in list(self.subscription_map.keys()):
                     try:
-                        await asyncio.wait_for(self.ws.account_unsubscribe(subscription_id), timeout=0.1)
+                        await asyncio.wait_for(self._send_unsubscribe(subscription_id), timeout=0.1)
                     except Exception:
                         pass
             try:
@@ -671,3 +700,18 @@ class WebsocketMultiAccountSubscriber:
             self.oracle_id_to_subscription.clear()
             self.inflight_subscribes.clear()
             self.request_id_counter = 0
+            self.pubkey_inflight.clear()
+
+    async def _send_unsubscribe(self, subscription_id: int) -> None:
+        if self.ws is None:
+            return
+        async with self._lock:
+            self.request_id_counter += 1
+            request_id = self.request_id_counter
+        message = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "accountUnsubscribe",
+            "params": [subscription_id],
+        }
+        await self.ws.send(json.dumps(message))
