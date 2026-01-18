@@ -86,3 +86,23 @@
 - unsubscribe 后确保服务端不再推送消息。
 - get_data/fetch 在多 oracle_id 情况下行为稳定。
 
+---
+
+## 改动原因与总结（已完成）
+
+### 改动原因
+- WebSocket 订阅存在重复订阅与取消订阅失效风险，导致资源浪费与订阅状态错乱。
+- 多源 oracle 的 key 语义不清晰，`get_data/fetch` 在多 source 时存在歧义或错误更新。
+- Python SDK 的清算判断与链上/Rust 在 margin buffer 使用上出现偏差，日志口径不对齐。
+
+### 改动总结
+- 订阅层：
+  - 增加 in-flight 去重，避免并发 add_account 导致同一 pubkey 被重复订阅。
+  - 统一取消订阅为 JSON-RPC `accountUnsubscribe`，与 raw websocket 路径一致。
+  - `get_data/fetch` 在多 oracle_id 情况下强制显式选择或返回警告，避免歧义。
+- 清算判断与日志口径：
+  - 使用 maintenance 口径 `meets_margin_requirement` 作为“可清算”判断，保持与链上一致。
+  - margin buffer 只用于 `margin_requirement_plus_buffer` 与 `total_collateral_buffer`，不用于基础 liability 计算。
+  - 修正 spot liability 日志口径，不再把 margin buffer 叠加到 liability 权重上，保证日志与链上对齐。
+
+

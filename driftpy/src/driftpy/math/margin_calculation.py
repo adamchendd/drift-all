@@ -73,3 +73,9 @@ class MarginCalculation:
 
     def can_exit_liquidation(self) -> bool:
         return self.meets_margin_requirement_with_buffer()
+
+    def get_free_collateral(self) -> int:
+        return int(self.total_collateral - self.margin_requirement)
+
+    def margin_shortage(self) -> int:
+        return max(0, int(self.margin_requirement - self.total_collateral))
